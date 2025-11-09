@@ -21,6 +21,40 @@ class TransformerConfig:
         self.vocab_size = vocab_size
         self.dropout = dropout
 
+    def to_json(self):
+        return {
+            "d_model": self.d_model,
+            "n_heads": self.n_heads,
+            "d_ff": self.d_ff,
+            "n_layers": self.n_layers,
+            "vocab_size": self.vocab_size,
+            "dropout": self.dropout,
+        }
+
+
+def build_causal_mask(attention_mask: torch.Tensor):
+    """
+    attention_mask: padding mask of shape (batch_size, seq_len) where:
+              - 1 indicates valid tokens
+              - 0 indicates padding tokens
+
+    Returns: causal mask of shape (batch_size, 1, seq_len, seq_len)
+    """
+    seq_len = attention_mask.shape[-1]
+
+    causal_mask = torch.triu(
+        torch.ones(seq_len, seq_len, device=attention_mask.device), diagonal=1
+    ).bool()
+    causal_mask = causal_mask.unsqueeze(0).unsqueeze(
+        0
+    )  # Shape: (1, 1, seq_len, seq_len)
+
+    padding_mask = (
+        (1 - attention_mask).bool().unsqueeze(1).unsqueeze(1).repeat(1, 1, seq_len, 1)
+    )  # shape: (batch_size, 1, seq_len, seq_len)
+
+    return padding_mask | causal_mask  # shape: (batch_size, 1, seq_len, seq_len)
+
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, config: TransformerConfig):
@@ -68,8 +102,9 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
         x: input tensor of shape (batch_size, seq_len, d_model)
-        mask: optional look-ahead mask for decoding of shape (seq_len, seq_len)
-              or broadcastable to (batch_size, n_heads, seq_len, seq_len)
+        mask: optional causal mask of shape (batch_size, 1, seq_len, seq_len) where:
+              - 1 indicates valid tokens
+              - 0 indicates padding tokens
 
         Returns: output tensor of shape (batch_size, seq_len, d_model)
         """
@@ -92,7 +127,7 @@ class MultiHeadAttention(nn.Module):
         )  # shape (batch_size, n_heads, seq_len, seq_len).
 
         if mask is not None:
-            att_scores = torch.masked_fill(att_scores, mask == 1, -torch.inf)
+            att_scores = att_scores.masked_fill(mask, -torch.inf)
 
         att_probs = torch.softmax(att_scores, dim=-1)
         att_probs = self.dropout(att_probs)
@@ -145,7 +180,9 @@ class DecoderBlock(nn.Module):
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         x: input tensor of shape (batch_size, seq_len, d_model)
-        mask: the look-ahead mask for the self-attention layer.
+        mask: causal mask of shape (batch_size, 1, seq_len, seq_len) where:
+              - True indicates masked tokens
+              - False indicates unmasked tokens
 
         Returns: output tensor of shape (batch_size, seq_len, d_model)
         """
@@ -182,13 +219,27 @@ class TransformerDecoder(nn.Module):
         self.norm = nn.LayerNorm(self.d_model)
         self.lm_head = nn.Parameter(self.token_embedding.weight.T)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        """returns logits over the vocabulary"""
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        """
+        Forward pass through the transformer decoder.
+
+        Args:
+            x: input token IDs of shape (batch_size, seq_len)
+            mask: optional padding mask of shape (batch_size, seq_len) where:
+                  - 1 indicates valid tokens
+                  - 0 indicates padding tokens
+
+        Returns:
+            logits: output logits of shape (batch_size, seq_len, vocab_size)
+        """
+        device = x.device
+
+        causal_mask = build_causal_mask(mask).to(device)
         x = self.token_embedding(x)
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, causal_mask)
         return self.norm(x) @ self.lm_head.to(
-            x.device
+            device
         )  # shape (batch_size, seq_len, vocab_size)
 
 
@@ -202,10 +253,19 @@ def main():
     print(f"Using device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
-    text = "Hello, how are you?"
-    tokens = tokenizer.encode(text, return_tensors="pt").to(device)
-    seq_len = tokens.shape[1]
-    mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).to(device)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    # Example with multiple sequences of different lengths
+    texts = [
+        "Hello, how are you?",
+        "I am doing great!",
+        "This is a longer sentence to demonstrate padding.",
+    ]
+    encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
+
+    tokens = encoded["input_ids"].to(device)
+    attention_mask = encoded["attention_mask"].to(device)  # This is your padding mask!
+
     vocab_size = tokenizer.vocab_size
 
     transformer_config = TransformerConfig(
@@ -217,8 +277,11 @@ def main():
     )
     model = TransformerDecoder(transformer_config)
     model.to(device)
-    x = model(tokens, mask)
-    print(x)
+
+    logits = model(tokens, attention_mask)
+    print(f"Input shape: {tokens.shape}")
+    print(f"Mask shape: {attention_mask.shape}")
+    print(f"Output shape: {logits.shape}")
 
 
 if __name__ == "__main__":
