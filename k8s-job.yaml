@@ -1,0 +1,48 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: transformer-training
+  namespace: jens
+  labels:
+    app: transformer-training
+spec:
+  ttlSecondsAfterFinished: 1800
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: transformer-training
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: shoot--25e1b49600--c-test-gpu1-eu01-1-z1-695d9-kgcxq
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "1"
+          effect: NoSchedule
+      containers:
+        - name: training
+          image: ghcr.io/zwischenraum/transformer-experiments:latest
+          imagePullPolicy: Always
+          resources:
+            requests:
+              nvidia.com/gpu: 1
+            limits:
+              nvidia.com/gpu: 1
+          env:
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-api-key
+                  key: api-key
+            - name: TRAIN_CONFIG_PATH
+              value: /etc/transformer-config/training.yaml
+          volumeMounts:
+            - name: transformer-config
+              mountPath: /etc/transformer-config
+              readOnly: true
+      restartPolicy: Never
+      volumes:
+        - name: transformer-config
+          configMap:
+            name: transformer-training-config
