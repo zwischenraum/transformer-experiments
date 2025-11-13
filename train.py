@@ -126,8 +126,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     print(f"Using device: {device}")
 
-    run_id = os.environ.get(RUN_ID_ENV)
-    resume_artifact = os.environ.get(RESUME_ARTIFACT_ENV)
+    run_id = os.environ.get(RUN_ID_ENV) or run_config.get("id")
+    resume_artifact = os.environ.get(RESUME_ARTIFACT_ENV) or run_config.get(
+        "resume_artifact"
+    )
     if run_id:
         wandb_run = wandb.init(
             project=project, name=run_name, id=run_id, resume="allow"

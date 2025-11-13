@@ -4,6 +4,8 @@ run:
   artifact:
     filename: checkpoint.pt
     name: model-checkpoint
+  id: null
+  resume_artifact: null
 
 training:
   total_steps: 10
