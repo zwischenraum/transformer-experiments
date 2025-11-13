@@ -2,14 +2,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformer import TransformerConfig, TransformerDecoder
-import mlflow
+import wandb
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import GPT2TokenizerFast
 
-mlflow.system_metrics.enable_system_metrics_logging()
-mlflow.set_experiment("transformer")
-mlflow.pytorch.autolog()
+wandb.init(project="transformer", name="train")
 
 
 def create_dataset(seq_len: int, batch_size: int = 10):
@@ -56,7 +54,7 @@ def main():
         n_layers=n_layers,
         vocab_size=vocab_size,
     )
-    mlflow.log_params(transformer_config.to_json())
+    wandb.config.update(transformer_config.to_json())
     model = TransformerDecoder(transformer_config)
     model.to(device)
 
@@ -88,14 +86,15 @@ def main():
         # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
         optimizer.step()
 
-        mlflow.log_metric("loss", loss.item(), step=step)
+        wandb.log({"loss": loss.item()}, step=step)
 
         pbar.set_description(f"Loss: {loss.item():.4f}")
 
         step += 1
 
-    mlflow.pytorch.log_model(model, name="model", input_example=batch)
-    mlflow.end_run()
+    torch.save(model.state_dict(), "model.pth")
+    wandb.save("model.pth")
+    wandb.finish()
 
 
 if __name__ == "__main__":

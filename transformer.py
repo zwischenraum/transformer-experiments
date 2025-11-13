@@ -234,6 +234,8 @@ class TransformerDecoder(nn.Module):
         """
         device = x.device
 
+        if mask is None:
+            mask = torch.ones_like(x)
         causal_mask = build_causal_mask(mask).to(device)
         x = self.token_embedding(x)
         for layer in self.layers:
@@ -241,6 +243,23 @@ class TransformerDecoder(nn.Module):
         return self.norm(x) @ self.lm_head.to(
             device
         )  # shape (batch_size, seq_len, vocab_size)
+
+    def generate(self, x: torch.Tensor, max_length: int = 100) -> torch.Tensor:
+        """
+        Generate text from the transformer decoder. Greedy decoding.
+
+        Args:
+            x: input token IDs of shape (batch_size, seq_len)
+            max_length: maximum length of the generated text
+
+        Returns:
+            generated text of shape (batch_size, max_length)
+        """
+        for _ in range(max_length):
+            logits = self(x)
+            next_token = torch.argmax(logits[:, -1, :], dim=-1)
+            x = torch.cat([x, next_token.unsqueeze(-1)], dim=-1)
+        return x
 
 
 def main():
@@ -255,7 +274,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
     tokenizer.pad_token = tokenizer.eos_token
 
-    # Example with multiple sequences of different lengths
     texts = [
         "Hello, how are you?",
         "I am doing great!",
@@ -264,7 +282,7 @@ def main():
     encoded = tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
 
     tokens = encoded["input_ids"].to(device)
-    attention_mask = encoded["attention_mask"].to(device)  # This is your padding mask!
+    attention_mask = encoded["attention_mask"].to(device)
 
     vocab_size = tokenizer.vocab_size
 
@@ -282,6 +300,11 @@ def main():
     print(f"Input shape: {tokens.shape}")
     print(f"Mask shape: {attention_mask.shape}")
     print(f"Output shape: {logits.shape}")
+
+    generated = model.generate(tokens, max_length=100)
+    print(f"Generated text: {tokenizer.decode(generated[0])}")
+    print(f"Generated text: {tokenizer.decode(generated[1])}")
+    print(f"Generated text: {tokenizer.decode(generated[2])}")
 
 
 if __name__ == "__main__":
