@@ -17,7 +17,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv export --format requirements.txt --locked --output-file requirements.txt && \
+    uv export --format requirements.txt --locked --no-hashes --output-file requirements.txt && \
     uv pip install --system --break-system-packages --only-binary=:all: --requirements requirements.txt && \
     rm requirements.txt
 
