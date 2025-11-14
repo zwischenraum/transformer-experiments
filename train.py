@@ -86,6 +86,7 @@ def save_checkpoint(
     step: int,
     dataset_state: dict,
     model_config: dict,
+    total_tokens_seen: int,
 ) -> None:
     torch.save(
         {
@@ -94,6 +95,7 @@ def save_checkpoint(
             "step": step,
             "dataset": dataset_state,
             "model_config": model_config,
+            "total_tokens_seen": total_tokens_seen,
         },
         path,
     )
@@ -189,6 +191,7 @@ def main():
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     start_step = 0
+    total_tokens_seen = 0
     if resume_artifact:
         artifact = wandb_run.use_artifact(resume_artifact, type="model")
         checkpoint_dir = Path(artifact.download())
@@ -204,6 +207,7 @@ def main():
         optimizer.load_state_dict(checkpoint["optimizer"])
         dataset.load_state_dict(checkpoint["dataset"])
         start_step = int(checkpoint["step"])
+        total_tokens_seen = int(checkpoint["total_tokens_seen"])
 
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=0)
 
@@ -230,13 +234,27 @@ def main():
 
         optimizer.zero_grad()
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)  # Gradient clipping
+
+        gradient_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), torch.inf
+        )  # no clipping yet - investigate the effects of clipping
+        parameter_norm = torch.nn.utils.get_total_norm(model.parameters())
+
         optimizer.step()
 
-        wandb_run.log({"loss": loss.item()}, step=step)
-
+        tokens_in_batch = attention_mask.sum().item()
+        total_tokens_seen += tokens_in_batch
+        wandb_run.log(
+            {
+                "loss": loss.item(),
+                "gradient_norm": gradient_norm.item(),
+                "parameter_norm": parameter_norm.item(),
+                "batch_tokens": tokens_in_batch,
+                "total_tokens_seen": total_tokens_seen,
+            },
+            step=step,
+        )
         pbar.set_description(f"Loss: {loss.item():.4f}")
-
         step += 1
 
     if step == start_step:
@@ -253,6 +271,7 @@ def main():
         step=step,
         dataset_state=dataset_state,
         model_config=model_config,
+        total_tokens_seen=total_tokens_seen,
     )
     artifact = wandb.Artifact(artifact_name, type="model")
     artifact.add_file(str(checkpoint_path))
