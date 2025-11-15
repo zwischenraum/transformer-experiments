@@ -21,6 +21,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system --break-system-packages --only-binary=:all: --requirements requirements.txt && \
     rm requirements.txt
 
-COPY train.py transformer.py ./
+COPY src/train.py src/transformer.py ./
 
 CMD ["python", "train.py"]

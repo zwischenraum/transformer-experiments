@@ -217,7 +217,10 @@ class TransformerDecoder(nn.Module):
             [DecoderBlock(config) for _ in range(self.n_layers)]
         )
         self.norm = nn.LayerNorm(self.d_model)
-        self.lm_head = nn.Parameter(self.token_embedding.weight.T)
+        self.lm_head = nn.Linear(
+            in_features=self.d_model, out_features=config.vocab_size, bias=False
+        )
+        self.lm_head.weight = self.token_embedding.weight
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -240,9 +243,8 @@ class TransformerDecoder(nn.Module):
         x = self.token_embedding(x)
         for layer in self.layers:
             x = layer(x, causal_mask)
-        return self.norm(x) @ self.lm_head.to(
-            device
-        )  # shape (batch_size, seq_len, vocab_size)
+        x = self.norm(x)
+        return self.lm_head(x)  # shape (batch_size, seq_len, vocab_size)
 
     def generate(self, x: torch.Tensor, max_length: int = 100) -> torch.Tensor:
         """

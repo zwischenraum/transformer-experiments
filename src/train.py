@@ -186,6 +186,7 @@ def main():
         }
     )
     model = TransformerDecoder(transformer_config)
+    model.train()
     model.to(device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
