@@ -4,6 +4,7 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 from transformer import TransformerConfig, TransformerDecoder
 import wandb
 from datasets import load_dataset
@@ -83,6 +84,7 @@ def save_checkpoint(
     path: Path,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
     step: int,
     dataset_state: dict,
     model_config: dict,
@@ -92,6 +94,7 @@ def save_checkpoint(
         {
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "step": step,
             "dataset": dataset_state,
             "model_config": model_config,
@@ -99,6 +102,12 @@ def save_checkpoint(
         },
         path,
     )
+
+
+def checkpoint_path_for_step(base_path: Path, step_value: int) -> Path:
+    if step_value <= 0:
+        raise ValueError("Step must be positive when building checkpoint path.")
+    return base_path.with_name(f"{base_path.stem}-step-{step_value}{base_path.suffix}")
 
 
 def main():
@@ -119,6 +128,10 @@ def main():
     artifact_config = run_config.get("artifact", {})
     artifact_name = artifact_config.get("name", "model-checkpoint")
     checkpoint_filename = artifact_config.get("filename", "checkpoint.pt")
+    checkpoint_interval_steps = int(training_config["checkpoint_interval_steps"])
+    if checkpoint_interval_steps <= 0:
+        raise ValueError("training.checkpoint_interval_steps must be positive.")
+    checkpoint_base_path = Path(checkpoint_filename)
 
     total_steps = int(training_config["total_steps"])
     seq_len = int(training_config["seq_len"])
@@ -191,6 +204,19 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
+    warmup_steps = int(training_config["warmup_steps"])
+    cosine_steps = total_steps - warmup_steps
+
+    warmup_scheduler = LinearLR(
+        optimizer, start_factor=1e-12, end_factor=1.0, total_iters=warmup_steps
+    )
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=cosine_steps, eta_min=0.0)
+    scheduler = SequentialLR(
+        optimizer=optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_steps],
+    )
+
     start_step = 0
     total_tokens_seen = 0
     if resume_artifact:
@@ -206,9 +232,35 @@ def main():
             raise RuntimeError("Checkpoint model configuration does not match.")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
         dataset.load_state_dict(checkpoint["dataset"])
         start_step = int(checkpoint["step"])
         total_tokens_seen = int(checkpoint["total_tokens_seen"])
+
+    def persist_checkpoint(
+        *,
+        current_step: int,
+        target_path: Path,
+        extra_aliases: list[str] | None = None,
+    ) -> None:
+        dataset_state = dataset.state_dict()
+        save_checkpoint(
+            path=target_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            step=current_step,
+            dataset_state=dataset_state,
+            model_config=model_config,
+            total_tokens_seen=total_tokens_seen,
+        )
+        aliases = ["latest", f"step-{current_step}"]
+        if extra_aliases:
+            aliases.extend(extra_aliases)
+        artifact = wandb.Artifact(artifact_name, type="model")
+        artifact.add_file(str(target_path))
+        artifact.metadata["step"] = current_step
+        wandb_run.log_artifact(artifact, aliases=aliases)
 
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=0)
 
@@ -242,6 +294,7 @@ def main():
         parameter_norm = torch.nn.utils.get_total_norm(model.parameters())
 
         optimizer.step()
+        scheduler.step()
 
         tokens_in_batch = attention_mask.sum().item()
         total_tokens_seen += tokens_in_batch
@@ -250,6 +303,7 @@ def main():
                 "loss": loss.item(),
                 "gradient_norm": gradient_norm.item(),
                 "parameter_norm": parameter_norm.item(),
+                "learning_rate": scheduler.get_last_lr()[0],
                 "batch_tokens": tokens_in_batch,
                 "total_tokens_seen": total_tokens_seen,
             },
@@ -257,27 +311,26 @@ def main():
         )
         pbar.set_description(f"Loss: {loss.item():.4f}")
         step += 1
+        if step % checkpoint_interval_steps == 0:
+            interval_checkpoint_path = checkpoint_path_for_step(
+                checkpoint_base_path, step
+            )
+            persist_checkpoint(
+                current_step=step,
+                target_path=interval_checkpoint_path,
+            )
 
     if step == start_step:
         raise RuntimeError(
             "No training steps were executed; increase total_steps to continue training."
         )
 
-    dataset_state = dataset.state_dict()
-    checkpoint_path = Path(checkpoint_filename)
-    save_checkpoint(
-        path=checkpoint_path,
-        model=model,
-        optimizer=optimizer,
-        step=step,
-        dataset_state=dataset_state,
-        model_config=model_config,
-        total_tokens_seen=total_tokens_seen,
+    final_checkpoint_path = checkpoint_base_path
+    persist_checkpoint(
+        current_step=step,
+        target_path=final_checkpoint_path,
+        extra_aliases=["final"],
     )
-    artifact = wandb.Artifact(artifact_name, type="model")
-    artifact.add_file(str(checkpoint_path))
-    artifact.metadata["step"] = step
-    wandb_run.log_artifact(artifact, aliases=["latest"])
     wandb_run.finish()
 
 

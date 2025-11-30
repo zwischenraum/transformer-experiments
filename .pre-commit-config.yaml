@@ -26,5 +26,5 @@ repos:
     rev: v1.18.2
     hooks:
     -   id: mypy
-        additional_dependencies: [numpy, torch, types-pyyaml==6.0.12.20250915]
+        additional_dependencies: [numpy, torch, types-pyyaml==6.0.12.20250915, wandb]
         args: [--ignore-missing-imports, --no-strict-optional]
