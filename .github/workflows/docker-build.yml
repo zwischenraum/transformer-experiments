@@ -4,12 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'Dockerfile'
-      - 'pyproject.toml'
-      - 'uv.lock'
-      - 'train.py'
-      - 'transformer.py'
   workflow_dispatch:
 
 env:
